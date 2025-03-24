@@ -15,43 +15,76 @@ import os
 import sys
 import argparse
 import gradio as gr
+import i18n
 import numpy as np
 import torch
 import torchaudio
 import random
 import librosa
+
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.append('{}/third_party/Matcha-TTS'.format(ROOT_DIR))
+sys.path.append("{}/third_party/Matcha-TTS".format(ROOT_DIR))
 from cosyvoice.cli.cosyvoice import CosyVoice, CosyVoice2
 from cosyvoice.utils.file_utils import load_wav, logging
 from cosyvoice.utils.common import set_all_random_seed
 
-inference_mode_list = ['预训练音色', '3s极速复刻', '跨语种复刻', '自然语言控制']
-instruct_dict = {'预训练音色': '1. 选择预训练音色\n2. 点击生成音频按钮',
-                 '3s极速复刻': '1. 选择prompt音频文件，或录入prompt音频，注意不超过30s，若同时提供，优先选择prompt音频文件\n2. 输入prompt文本\n3. 点击生成音频按钮',
-                 '跨语种复刻': '1. 选择prompt音频文件，或录入prompt音频，注意不超过30s，若同时提供，优先选择prompt音频文件\n2. 点击生成音频按钮',
-                 '自然语言控制': '1. 选择预训练音色\n2. 输入instruct文本\n3. 点击生成音频按钮'}
-stream_mode_list = [('否', False), ('是', True)]
+from funasr import AutoModel
+
+# Load available languages
+i18n.load_path.append("./locales/")
+i18n.set("file_format", "json")
+
+i18n.set("filename_format", "{locale}.{format}")
+
+inference_mode_list = []
+instruct_dict = {}
+stream_mode_list = []
 max_val = 0.8
+
+
+def initialize_global_texts():
+    global inference_mode_list, instruct_dict, stream_mode_list
+
+    inference_mode_list = [
+        i18n.t("inference_mode_list.pretrained_voice"),
+        i18n.t("inference_mode_list.3s_fast_replication"),
+        i18n.t("inference_mode_list.crosslingual"),
+        i18n.t("inference_mode_list.natural_language_control"),
+    ]
+    instruct_dict = {
+        i18n.t("inference_mode_list.pretrained_voice"): i18n.t(
+            "instruct_dict.pretrained_voice"
+        ),
+        i18n.t("inference_mode_list.3s_fast_replication"): i18n.t(
+            "instruct_dict.3s_fast_replication"
+        ),
+        i18n.t("inference_mode_list.crosslingual"): i18n.t(
+            "instruct_dict.crosslingual"
+        ),
+        i18n.t("inference_mode_list.natural_language_control"): i18n.t(
+            "instruct_dict.natural_language_control"
+        ),
+    }
+    stream_mode_list = [
+        (i18n.t("boolean.false"), False),
+        (i18n.t("boolean.true"), True),
+    ]
 
 
 def generate_seed():
     seed = random.randint(1, 100000000)
-    return {
-        "__type__": "update",
-        "value": seed
-    }
+    return {"__type__": "update", "value": seed}
 
 
 def postprocess(speech, top_db=60, hop_length=220, win_length=440):
     speech, _ = librosa.effects.trim(
-        speech, top_db=top_db,
-        frame_length=win_length,
-        hop_length=hop_length
+        speech, top_db=top_db, frame_length=win_length, hop_length=hop_length
     )
     if speech.abs().max() > max_val:
         speech = speech / speech.abs().max() * max_val
-    speech = torch.concat([speech, torch.zeros(1, int(cosyvoice.sample_rate * 0.2))], dim=1)
+    speech = torch.concat(
+        [speech, torch.zeros(1, int(cosyvoice.sample_rate * 0.2))], dim=1
+    )
     return speech
 
 
@@ -59,8 +92,29 @@ def change_instruction(mode_checkbox_group):
     return instruct_dict[mode_checkbox_group]
 
 
-def generate_audio(tts_text, mode_checkbox_group, sft_dropdown, prompt_text, prompt_wav_upload, prompt_wav_record, instruct_text,
-                   seed, stream, speed):
+def prompt_wav_recognition(prompt_wav):
+    if prompt_wav:
+        res = asr_model.generate(
+            input=prompt_wav,
+            language="auto",  # "zn", "en", "yue", "ja", "ko", "nospeech"
+            use_itn=True,
+        )
+        text = res[0]["text"].split("|>")[-1]
+        return text
+
+
+def generate_audio(
+    tts_text,
+    mode_checkbox_group,
+    sft_dropdown,
+    prompt_text,
+    prompt_wav_upload,
+    prompt_wav_record,
+    instruct_text,
+    seed,
+    stream,
+    speed,
+):
     if prompt_wav_upload is not None:
         prompt_wav = prompt_wav_upload
     elif prompt_wav_record is not None:
@@ -68,133 +122,299 @@ def generate_audio(tts_text, mode_checkbox_group, sft_dropdown, prompt_text, pro
     else:
         prompt_wav = None
     # if instruct mode, please make sure that model is iic/CosyVoice-300M-Instruct and not cross_lingual mode
-    if mode_checkbox_group in ['自然语言控制']:
+    if mode_checkbox_group in [i18n.t("inference_mode_list.natural_language_control")]:
         if cosyvoice.instruct is False:
-            gr.Warning('您正在使用自然语言控制模式, {}模型不支持此模式, 请使用iic/CosyVoice-300M-Instruct模型'.format(args.model_dir))
+            gr.Warning(i18n.t("warnings.nlp_model_warn").format(args.model_dir))
             yield (cosyvoice.sample_rate, default_data)
-        if instruct_text == '':
-            gr.Warning('您正在使用自然语言控制模式, 请输入instruct文本')
+        if instruct_text == "":
+            gr.Warning(i18n.t("warnings.instruct_text"))
             yield (cosyvoice.sample_rate, default_data)
-        if prompt_wav is not None or prompt_text != '':
-            gr.Info('您正在使用自然语言控制模式, prompt音频/prompt文本会被忽略')
+        if prompt_wav is not None or prompt_text != "":
+            gr.Info(i18n.t("info.prompt_wav"))
     # if cross_lingual mode, please make sure that model is iic/CosyVoice-300M and tts_text prompt_text are different language
-    if mode_checkbox_group in ['跨语种复刻']:
+    if mode_checkbox_group in [i18n.t("inference_mode_list.crosslingual")]:
         if cosyvoice.instruct is True:
-            gr.Warning('您正在使用跨语种复刻模式, {}模型不支持此模式, 请使用iic/CosyVoice-300M模型'.format(args.model_dir))
+            gr.Warning(
+                i18n.t("warnings.no_crosslingual_support").format(args.model_dir)
+            )
             yield (cosyvoice.sample_rate, default_data)
-        if instruct_text != '':
-            gr.Info('您正在使用跨语种复刻模式, instruct文本会被忽略')
+        if instruct_text != "":
+            gr.Info(i18n.t("warnings.crosslingual_instruct_ignored"))
         if prompt_wav is None:
-            gr.Warning('您正在使用跨语种复刻模式, 请提供prompt音频')
+            gr.Warning(i18n.t("warnings.crosslingual_prompt_audio_required"))
             yield (cosyvoice.sample_rate, default_data)
-        gr.Info('您正在使用跨语种复刻模式, 请确保合成文本和prompt文本为不同语言')
+        gr.Info(i18n.t("info.crosslingual_language_reminder"))
     # if in zero_shot cross_lingual, please make sure that prompt_text and prompt_wav meets requirements
-    if mode_checkbox_group in ['3s极速复刻', '跨语种复刻']:
+    if mode_checkbox_group in [
+        i18n.t("inference_mode_list.3s_fast_replication"),
+        i18n.t("inference_mode_list.crosslingual"),
+    ]:
         if prompt_wav is None:
-            gr.Warning('prompt音频为空，您是否忘记输入prompt音频？')
+            gr.Warning(i18n.t("warnings.prompt_audio_empty"))
             yield (cosyvoice.sample_rate, default_data)
         if torchaudio.info(prompt_wav).sample_rate < prompt_sr:
-            gr.Warning('prompt音频采样率{}低于{}'.format(torchaudio.info(prompt_wav).sample_rate, prompt_sr))
+            gr.Warning(
+                i18n.t("warnings.sample_rate_error").format(
+                    torchaudio.info(prompt_wav).sample_rate, prompt_sr
+                )
+            )
             yield (cosyvoice.sample_rate, default_data)
     # sft mode only use sft_dropdown
-    if mode_checkbox_group in ['预训练音色']:
-        if instruct_text != '' or prompt_wav is not None or prompt_text != '':
-            gr.Info('您正在使用预训练音色模式，prompt文本/prompt音频/instruct文本会被忽略！')
-        if sft_dropdown == '':
-            gr.Warning('没有可用的预训练音色！')
+    if mode_checkbox_group in [i18n.t("inference_mode_list.pretrained_voice")]:
+        if instruct_text != "" or prompt_wav is not None or prompt_text != "":
+            gr.Info(i18n.t("info.pretrained_voice_warning"))
+        if sft_dropdown == "":
+            gr.Warning(i18n.t("warnings.pretrained_model_empty"))
             yield (cosyvoice.sample_rate, default_data)
     # zero_shot mode only use prompt_wav prompt text
-    if mode_checkbox_group in ['3s极速复刻']:
-        if prompt_text == '':
-            gr.Warning('prompt文本为空，您是否忘记输入prompt文本？')
+    if mode_checkbox_group in [i18n.t("inference_mode_list.3s_fast_replication")]:
+        if prompt_text == "":
+            gr.Warning(i18n.t("warnings.prompt_text_empty"))
             yield (cosyvoice.sample_rate, default_data)
-        if instruct_text != '':
-            gr.Info('您正在使用3s极速复刻模式，预训练音色/instruct文本会被忽略！')
+        if instruct_text != "":
+            gr.Info(i18n.t("info.instruct_text_empty"))
 
-    if mode_checkbox_group == '预训练音色':
-        logging.info('get sft inference request')
+    if mode_checkbox_group == i18n.t("inference_mode_list.pretrained_voice"):
+        logging.info("get sft inference request")
         set_all_random_seed(seed)
-        for i in cosyvoice.inference_sft(tts_text, sft_dropdown, stream=stream, speed=speed):
-            yield (cosyvoice.sample_rate, i['tts_speech'].numpy().flatten())
-    elif mode_checkbox_group == '3s极速复刻':
-        logging.info('get zero_shot inference request')
+        for i in cosyvoice.inference_sft(
+            tts_text, sft_dropdown, stream=stream, speed=speed
+        ):
+            yield (cosyvoice.sample_rate, i["tts_speech"].numpy().flatten())
+    elif mode_checkbox_group == i18n.t("inference_mode_list.3s_fast_replication"):
+        logging.info("get zero_shot inference request")
         prompt_speech_16k = postprocess(load_wav(prompt_wav, prompt_sr))
         set_all_random_seed(seed)
-        for i in cosyvoice.inference_zero_shot(tts_text, prompt_text, prompt_speech_16k, stream=stream, speed=speed):
-            yield (cosyvoice.sample_rate, i['tts_speech'].numpy().flatten())
-    elif mode_checkbox_group == '跨语种复刻':
-        logging.info('get cross_lingual inference request')
+        for i in cosyvoice.inference_zero_shot(
+            tts_text, prompt_text, prompt_speech_16k, stream=stream, speed=speed
+        ):
+            yield (cosyvoice.sample_rate, i["tts_speech"].numpy().flatten())
+    elif mode_checkbox_group == i18n.t("inference_mode_list.crosslingual"):
+        logging.info("get cross_lingual inference request")
         prompt_speech_16k = postprocess(load_wav(prompt_wav, prompt_sr))
         set_all_random_seed(seed)
-        for i in cosyvoice.inference_cross_lingual(tts_text, prompt_speech_16k, stream=stream, speed=speed):
-            yield (cosyvoice.sample_rate, i['tts_speech'].numpy().flatten())
+        for i in cosyvoice.inference_cross_lingual(
+            tts_text, prompt_speech_16k, stream=stream, speed=speed
+        ):
+            yield (cosyvoice.sample_rate, i["tts_speech"].numpy().flatten())
     else:
-        logging.info('get instruct inference request')
+        logging.info("get instruct inference request")
         set_all_random_seed(seed)
-        for i in cosyvoice.inference_instruct(tts_text, sft_dropdown, instruct_text, stream=stream, speed=speed):
-            yield (cosyvoice.sample_rate, i['tts_speech'].numpy().flatten())
+        for i in cosyvoice.inference_instruct(
+            tts_text, sft_dropdown, instruct_text, stream=stream, speed=speed
+        ):
+            yield (cosyvoice.sample_rate, i["tts_speech"].numpy().flatten())
 
 
 def main():
     with gr.Blocks() as demo:
-        gr.Markdown("### 代码库 [CosyVoice](https://github.com/FunAudioLLM/CosyVoice) \
-                    预训练模型 [CosyVoice-300M](https://www.modelscope.cn/models/iic/CosyVoice-300M) \
-                    [CosyVoice-300M-Instruct](https://www.modelscope.cn/models/iic/CosyVoice-300M-Instruct) \
-                    [CosyVoice-300M-SFT](https://www.modelscope.cn/models/iic/CosyVoice-300M-SFT)")
-        gr.Markdown("#### 请输入需要合成的文本，选择推理模式，并按照提示步骤进行操作")
+        gr.Markdown(i18n.t("markdown.code_reference"))
+        gr.Markdown(i18n.t("markdown.output_text_prompt"))
 
-        tts_text = gr.Textbox(label="输入合成文本", lines=1, value="我是通义实验室语音团队全新推出的生成式语音大模型，提供舒适自然的语音合成能力。")
+        tts_text = gr.Textbox(
+            label=i18n.t("input_label.enter_synthesis_text"),
+            lines=1,
+            value=i18n.t("placeholders.enter_synthesis_text"),
+        )
         with gr.Row():
-            mode_checkbox_group = gr.Radio(choices=inference_mode_list, label='选择推理模式', value=inference_mode_list[0])
-            instruction_text = gr.Text(label="操作步骤", value=instruct_dict[inference_mode_list[0]], scale=0.5)
-            sft_dropdown = gr.Dropdown(choices=sft_spk, label='选择预训练音色', value=sft_spk[0], scale=0.25)
-            stream = gr.Radio(choices=stream_mode_list, label='是否流式推理', value=stream_mode_list[0][1])
-            speed = gr.Number(value=1, label="速度调节(仅支持非流式推理)", minimum=0.5, maximum=2.0, step=0.1)
+            mode_checkbox_group = gr.Radio(
+                choices=inference_mode_list,
+                label=i18n.t("input_label.select_inference_mode_radio"),
+                value=inference_mode_list[0],
+            )
+            with gr.Accordion(i18n.t("input_label.instruction_text")):
+                instruction_text = gr.Markdown(
+                    label=i18n.t("input_label.instruction_text"),
+                    value=instruct_dict[inference_mode_list[0]],
+                )
+        with gr.Row():
+            sft_dropdown = gr.Dropdown(
+                choices=sft_spk,
+                label=i18n.t("input_label.sft_dropdown"),
+                value=sft_spk[0],
+                scale=0.25,
+                visible=(
+                    mode_checkbox_group.value
+                    in [
+                        i18n.t("inference_mode_list.pretrained_voice"),
+                        i18n.t("inference_mode_list.natural_language_control"),
+                    ]
+                ),
+            )
+            stream = gr.Radio(
+                choices=stream_mode_list,
+                label=i18n.t("input_label.stream"),
+                value=stream_mode_list[0][1],
+            )
+            speed = gr.Number(
+                value=1,
+                label=i18n.t("input_label.speed_adjustment"),
+                minimum=0.5,
+                maximum=2.0,
+                step=0.1,
+            )
             with gr.Column(scale=0.25):
                 seed_button = gr.Button(value="\U0001F3B2")
-                seed = gr.Number(value=0, label="随机推理种子")
+                seed = gr.Number(value=0, label=i18n.t("input_label.seed_number"))
 
         with gr.Row():
-            prompt_wav_upload = gr.Audio(sources='upload', type='filepath', label='选择prompt音频文件，注意采样率不低于16khz')
-            prompt_wav_record = gr.Audio(sources='microphone', type='filepath', label='录制prompt音频文件')
-        prompt_text = gr.Textbox(label="输入prompt文本", lines=1, placeholder="请输入prompt文本，需与prompt音频内容一致，暂时不支持自动识别...", value='')
-        instruct_text = gr.Textbox(label="输入instruct文本", lines=1, placeholder="请输入instruct文本.", value='')
+            prompt_wav_upload = gr.Audio(
+                sources="upload",
+                type="filepath",
+                label=i18n.t("input_label.prompt_wav_upload"),
+                visible=(
+                    mode_checkbox_group.value
+                    in [
+                        i18n.t("inference_mode_list.3s_fast_replication"),
+                        i18n.t("inference_mode_list.crosslingual"),
+                    ]
+                ),
+            )
+            prompt_wav_record = gr.Audio(
+                sources="microphone",
+                type="filepath",
+                label=i18n.t("input_label.prompt_wav_record"),
+                visible=(
+                    mode_checkbox_group.value
+                    in [
+                        i18n.t("inference_mode_list.3s_fast_replication"),
+                        i18n.t("inference_mode_list.crosslingual"),
+                    ]
+                ),
+            )
+            prompt_text = gr.Textbox(
+                label=i18n.t("input_label.prompt_text"),
+                lines=3,
+                placeholder=i18n.t("placeholders.prompt_text"),
+                value="",
+                visible=(
+                    mode_checkbox_group.value
+                    in [
+                        i18n.t("inference_mode_list.3s_fast_replication"),
+                        i18n.t("inference_mode_list.crosslingual"),
+                    ]
+                ),
+            )
+            instruct_text = gr.Textbox(
+                label=i18n.t("input_label.instruct_text"),
+                lines=3,
+                placeholder=i18n.t("placeholders.instruct_text"),
+                value="",
+            )
 
-        generate_button = gr.Button("生成音频")
+        generate_button = gr.Button(i18n.t("input_label.generate_button"))
 
-        audio_output = gr.Audio(label="合成音频", autoplay=True, streaming=True)
+        audio_output = gr.Audio(
+            label=i18n.t("input_label.audio_output"), autoplay=True, streaming=True
+        )
 
         seed_button.click(generate_seed, inputs=[], outputs=seed)
-        generate_button.click(generate_audio,
-                              inputs=[tts_text, mode_checkbox_group, sft_dropdown, prompt_text, prompt_wav_upload, prompt_wav_record, instruct_text,
-                                      seed, stream, speed],
-                              outputs=[audio_output])
-        mode_checkbox_group.change(fn=change_instruction, inputs=[mode_checkbox_group], outputs=[instruction_text])
+        generate_button.click(
+            generate_audio,
+            inputs=[
+                tts_text,
+                mode_checkbox_group,
+                sft_dropdown,
+                prompt_text,
+                prompt_wav_upload,
+                prompt_wav_record,
+                instruct_text,
+                seed,
+                stream,
+                speed,
+            ],
+            outputs=[audio_output],
+        )
+        mode_checkbox_group.change(
+            fn=change_instruction,
+            inputs=[mode_checkbox_group],
+            outputs=[instruction_text],
+        )
+        mode_checkbox_group.change(
+            fn=lambda mode: (
+                gr.update(
+                    visible=(
+                        mode
+                        in [
+                            i18n.t("inference_mode_list.pretrained_voice"),
+                            i18n.t("inference_mode_list.natural_language_control"),
+                        ]
+                    )
+                ),
+                gr.update(
+                    visible=(
+                        mode
+                        in [
+                            i18n.t("inference_mode_list.3s_fast_replication"),
+                            i18n.t("inference_mode_list.crosslingual"),
+                        ]
+                    )
+                ),
+                gr.update(
+                    visible=(
+                        mode
+                        in [
+                            i18n.t("inference_mode_list.3s_fast_replication"),
+                            i18n.t("inference_mode_list.crosslingual"),
+                        ]
+                    )
+                ),
+                gr.update(
+                    visible=(
+                        mode
+                        in [
+                            i18n.t("inference_mode_list.3s_fast_replication"),
+                            i18n.t("inference_mode_list.crosslingual"),
+                        ]
+                    )
+                ),
+            ),
+            inputs=[mode_checkbox_group],
+            outputs=[sft_dropdown, prompt_wav_upload, prompt_wav_record, prompt_text],
+        )
+        prompt_wav_upload.change(
+            fn=prompt_wav_recognition, inputs=[prompt_wav_upload], outputs=[prompt_text]
+        )
+        prompt_wav_record.change(
+            fn=prompt_wav_recognition, inputs=[prompt_wav_record], outputs=[prompt_text]
+        )
+
     demo.queue(max_size=4, default_concurrency_limit=2)
-    demo.launch(server_name='0.0.0.0', server_port=args.port)
+    demo.launch(server_name="0.0.0.0", server_port=args.port)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--port',
-                        type=int,
-                        default=8000)
-    parser.add_argument('--model_dir',
-                        type=str,
-                        default='pretrained_models/CosyVoice2-0.5B',
-                        help='local path or modelscope repo id')
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--model_dir",
+        type=str,
+        default="pretrained_models/CosyVoice2-0.5B",
+        help="local path or modelscope repo id",
+    )
+    parser.add_argument("--locale", type=str, default="en", help="language locale")
     args = parser.parse_args()
+
+    i18n.set("locale", args.locale)
+    initialize_global_texts()
+
     try:
         cosyvoice = CosyVoice(args.model_dir)
     except Exception:
         try:
             cosyvoice = CosyVoice2(args.model_dir)
         except Exception:
-            raise TypeError('no valid model_type!')
+            raise TypeError("no valid model_type!")
 
     sft_spk = cosyvoice.list_available_spks()
     if len(sft_spk) == 0:
-        sft_spk = ['']
+        sft_spk = [""]
+
     prompt_sr = 16000
     default_data = np.zeros(cosyvoice.sample_rate)
+
+    asr_model_dir = "pretrained_models/SenseVoiceSmall"
+    asr_model = AutoModel(
+        model=asr_model_dir, disable_update=True, log_level="DEBUG", device="cuda"
+    )
     main()

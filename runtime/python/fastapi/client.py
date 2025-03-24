@@ -26,27 +26,27 @@ def main():
             'tts_text': args.tts_text,
             'spk_id': args.spk_id
         }
-        response = requests.request("GET", url, data=payload, stream=True)
+        response = requests.request("POST", url, data=payload, stream=True)
     elif args.mode == 'zero_shot':
         payload = {
             'tts_text': args.tts_text,
             'prompt_text': args.prompt_text
         }
         files = [('prompt_wav', ('prompt_wav', open(args.prompt_wav, 'rb'), 'application/octet-stream'))]
-        response = requests.request("GET", url, data=payload, files=files, stream=True)
+        response = requests.request("POST", url, data=payload, files=files, stream=True)
     elif args.mode == 'cross_lingual':
         payload = {
             'tts_text': args.tts_text,
         }
         files = [('prompt_wav', ('prompt_wav', open(args.prompt_wav, 'rb'), 'application/octet-stream'))]
-        response = requests.request("GET", url, data=payload, files=files, stream=True)
+        response = requests.request("POST", url, data=payload, files=files, stream=True)
     else:
         payload = {
             'tts_text': args.tts_text,
             'spk_id': args.spk_id,
             'instruct_text': args.instruct_text
         }
-        response = requests.request("GET", url, data=payload, stream=True)
+        response = requests.request("POST", url, data=payload, stream=True)
     tts_audio = b''
     for r in response.iter_content(chunk_size=16000):
         tts_audio += r

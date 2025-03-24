@@ -23,6 +23,7 @@ openai-whisper==20231117
 protobuf==4.25
 pydantic==2.7.0
 pyworld==0.3.4
+python-i18n==0.3.9
 rich==13.7.1
 soundfile==0.12.1
 tensorboard==2.14.0
@@ -37,3 +38,4 @@ wget==3.2
 fastapi==0.115.6
 fastapi-cli==0.0.4
 WeTextProcessing==1.0.3
+funasr==1.2.2
